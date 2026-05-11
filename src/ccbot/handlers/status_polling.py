@@ -63,6 +63,11 @@ _GENERIC_SHELL_NAMES = frozenset(
     {"bash", "zsh", "sh", "fish", "dash", "ksh", "node", "claude"}
 )
 
+# Pane commands that indicate the window is an orphan shell prompt (Claude exited).
+# These windows should not get auto-created topics. claude/node are NOT here —
+# those are active Claude processes.
+SHELL_PANE_COMMANDS = frozenset({"bash", "zsh", "sh", "fish", "dash", "ksh"})
+
 # Substrings in BadRequest messages that indicate the topic is gone
 _TOPIC_GONE_MARKERS = ("Topic_id_invalid", "Message thread not found")
 
@@ -184,6 +189,8 @@ async def auto_create_topics_for_orphans(bot: Bot) -> None:
         return
 
     bound_ids = {wid for _, _, wid in session_manager.iter_thread_bindings()}
+    # Skip shell-only windows: an idle bash prompt is an orphan from a previous
+    # Claude session, not a new session worth creating a topic for.
     orphans = [
         w
         for w in windows
@@ -191,6 +198,7 @@ async def auto_create_topics_for_orphans(bot: Bot) -> None:
         and w.window_id not in bound_ids
         and w.window_id not in _creating_topics
         and not session_manager.is_unbind_blacklisted(w.window_id)
+        and (w.pane_current_command or "").lower() not in SHELL_PANE_COMMANDS
     ]
     if not orphans:
         return

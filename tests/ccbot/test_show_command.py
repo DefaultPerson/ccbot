@@ -65,19 +65,27 @@ class TestShowCommand:
                 "attach",
                 "-t",
                 "{session}",
+                ";",
+                "set-option",
+                "-t",
+                "{session}",
+                "destroy-unattached",
+                "on",
             ]
             mock_sm.resolve_window_for_thread.return_value = "@5"
             mock_sm.get_display_name.return_value = "project"
             window = MagicMock()
             window.window_id = "@5"
             mock_tmux.find_window_by_id = AsyncMock(return_value=window)
+            mock_tmux.make_view_session = AsyncMock(return_value="ccbot-v-5-abc")
             mock_tmux.select_window = AsyncMock(return_value=True)
 
             from ccbot.bot import show_command
 
             await show_command(update, context)
 
-            mock_tmux.select_window.assert_awaited_once_with("@5")
+            mock_tmux.make_view_session.assert_awaited_once_with("@5")
+            mock_tmux.select_window.assert_not_called()  # view path skips this
             args, kwargs = mock_spawn.call_args
             assert args == (
                 "ptyxis",
@@ -86,7 +94,13 @@ class TestShowCommand:
                 "tmux",
                 "attach",
                 "-t",
-                "ccbot",
+                "ccbot-v-5-abc",
+                ";",
+                "set-option",
+                "-t",
+                "ccbot-v-5-abc",
+                "destroy-unattached",
+                "on",
             )
             assert kwargs["start_new_session"] is True
             mock_reply.assert_awaited()  # success reply
@@ -195,6 +209,7 @@ class TestShowCommand:
 
     @pytest.mark.asyncio
     async def test_show_select_window_failure_replies_with_error(self):
+        """When the view-session fallback path also fails, /show errors out."""
         update = _make_update()
         context = _make_context()
 
@@ -219,6 +234,7 @@ class TestShowCommand:
             window = MagicMock()
             window.window_id = "@5"
             mock_tmux.find_window_by_id = AsyncMock(return_value=window)
+            mock_tmux.make_view_session = AsyncMock(return_value=None)
             mock_tmux.select_window = AsyncMock(return_value=False)
 
             from ccbot.bot import show_command
@@ -282,6 +298,7 @@ class TestShowCommand:
             window = MagicMock()
             window.window_id = "@7"
             mock_tmux.find_window_by_id = AsyncMock(return_value=window)
+            mock_tmux.make_view_session = AsyncMock(return_value="ccbot-v-7-xx")
             mock_tmux.select_window = AsyncMock(return_value=True)
 
             from ccbot.bot import show_command
@@ -295,5 +312,5 @@ class TestShowCommand:
                 "tmux",
                 "select-window",
                 "-t",
-                "ccbot:@7",
+                "ccbot-v-7-xx:@7",
             )

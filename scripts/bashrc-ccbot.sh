@@ -32,13 +32,30 @@ _ccbot_spawn() {
     fi
 
     if [[ -n "$TMUX" ]]; then
-        # Already inside a tmux client — switch it onto the new window.
+        # Already inside a tmux client — switch only THIS client onto the new
+        # window. Other clients of the ccbot session are not affected.
         tmux switch-client -t "ccbot:$wid"
     else
-        # Free shell — attach to ccbot session focused on the new window.
-        # Detaching (Ctrl-b d) returns to this shell; window keeps running.
-        tmux select-window -t "ccbot:$wid"
-        tmux attach -t ccbot
+        # Free shell — create a grouped view-session so other ccbot clients
+        # (e.g. /show terminals already open) don't jump to this window.
+        # destroy-unattached is applied *after* attach (tmux \; chain) — if
+        # set on a detached session it kills the view immediately.
+        # The window-unlinked hook auto-destroys the view when THIS window
+        # dies, so the terminal closes instead of falling back to __main__.
+        local view="ccbot-v-${wid#@}-$(date +%s%N | tail -c 7)"
+        if tmux new-session -d -s "$view" -t ccbot \; \
+                select-window -t "$view:$wid" \; \
+                set-hook -t "$view" window-unlinked \
+                    "if-shell -F '#{==:#{hook_window},$wid}' 'kill-session -t $view'" \
+                2>/dev/null; then
+            tmux attach -t "$view" \; \
+                set-option -t "$view" destroy-unattached on
+        else
+            # Fallback (shouldn't happen) — direct attach. Other clients DO
+            # get yanked here; preferable to silently failing.
+            tmux select-window -t "ccbot:$wid"
+            tmux attach -t ccbot
+        fi
     fi
 }
 

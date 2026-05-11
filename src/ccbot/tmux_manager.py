@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import secrets
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -363,6 +364,69 @@ class TmuxManager:
                 return False
 
         return await asyncio.to_thread(_sync_kill)
+
+    async def make_view_session(self, window_id: str) -> str | None:
+        """Create a short-lived grouped tmux session focused on `window_id`.
+
+        Grouped sessions share the underlying windows with the source session
+        but track active-window independently per session. That means attaching
+        a new terminal to the view session does NOT yank other clients of
+        `ccbot` onto the same window — which is what `select-window` on the
+        source session would do.
+
+        `destroy-unattached on` ensures the view session is cleaned up as soon
+        as the client detaches (closes the terminal). Returns the new session
+        name, or None on failure.
+        """
+        suffix = secrets.token_hex(3)
+        view_name = f"{config.tmux_session_name}-v-{window_id.lstrip('@')}-{suffix}"
+        try:
+            # `new-session -d` creates the grouped session detached; we point
+            # it at the requested window and install a hook that kills the
+            # view session as soon as THAT window is unlinked from the group.
+            # Effect: when the bot kills the bound tmux window, the view dies
+            # → the attached client detaches → the terminal emulator closes,
+            # instead of falling back to __main__ / unrelated windows.
+            # We do NOT set destroy-unattached here — tmux applies it
+            # immediately to detached sessions, killing the view before the
+            # terminal attaches. The caller sets it after attach.
+            hook_cmd = (
+                f"if-shell -F '#{{==:#{{hook_window}},{window_id}}}' "
+                f"'kill-session -t {view_name}'"
+            )
+            proc = await asyncio.create_subprocess_exec(
+                "tmux",
+                "new-session",
+                "-d",
+                "-s",
+                view_name,
+                "-t",
+                config.tmux_session_name,
+                ";",
+                "select-window",
+                "-t",
+                f"{view_name}:{window_id}",
+                ";",
+                "set-hook",
+                "-t",
+                view_name,
+                "window-unlinked",
+                hook_cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode != 0:
+                logger.error(
+                    "tmux new-session/select-window for %s failed: %s",
+                    view_name,
+                    stderr.decode("utf-8", errors="replace").strip(),
+                )
+                return None
+            return view_name
+        except Exception as e:
+            logger.error("make_view_session failed for %s: %s", window_id, e)
+            return None
 
     async def select_window(self, window_id: str) -> bool:
         """Set the active window of the ccbot session to window_id.

@@ -126,6 +126,12 @@ class TestConfigBidirectional:
         cfg = Config()
         assert cfg.terminal_cmd[0] == "ptyxis"
         assert "{session}" in cfg.terminal_cmd
+        # destroy-unattached is set after attach, not before — otherwise the
+        # detached view session is killed by tmux before the terminal attaches.
+        assert "destroy-unattached" in cfg.terminal_cmd
+        assert cfg.terminal_cmd.index("attach") < cfg.terminal_cmd.index(
+            "destroy-unattached"
+        )
 
     def test_terminal_cmd_custom_shlex_split(self, monkeypatch):
         monkeypatch.setenv(

@@ -282,30 +282,36 @@ async def show_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         )
         return
 
-    argv = [
-        arg.format(session=config.tmux_session_name, window_id=wid)
-        for arg in config.terminal_cmd
-    ]
-    if not argv:
+    if not config.terminal_cmd:
         await safe_reply(
             update.message,
             "❌ CCBOT_TERMINAL_CMD is empty. Set it to a terminal command.",
         )
         return
-    if shutil.which(argv[0]) is None:
+    if shutil.which(config.terminal_cmd[0]) is None:
         await safe_reply(
             update.message,
-            f"❌ Terminal binary not found: '{argv[0]}'. "
+            f"❌ Terminal binary not found: '{config.terminal_cmd[0]}'. "
             "Set CCBOT_TERMINAL_CMD to a terminal you have installed.",
         )
         return
 
-    if not await tmux_manager.select_window(wid):
+    # Use a grouped view-session so attaching the new terminal does NOT yank
+    # other tmux clients of `ccbot` onto this window. Falls back to the source
+    # session + select-window if the view-session can't be created (rare).
+    view_name = await tmux_manager.make_view_session(wid)
+    session_for_attach = view_name or config.tmux_session_name
+    if view_name is None and not await tmux_manager.select_window(wid):
         await safe_reply(
             update.message,
             f"❌ Failed to set active tmux window to {wid}.",
         )
         return
+
+    argv = [
+        arg.format(session=session_for_attach, window_id=wid)
+        for arg in config.terminal_cmd
+    ]
 
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -1050,7 +1056,9 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
     wid = session_manager.get_window_for_thread(user.id, thread_id)
     if wid is None:
-        # Unbound topic — check for unbound windows first
+        # Unbound topic — check for unbound windows first.
+        # Show every unbound window; the user picks. Auto-create scan filters
+        # shell-only windows on its own, but here we trust user judgment.
         all_windows = await tmux_manager.list_windows()
         bound_ids = {wid for _, _, wid in session_manager.iter_thread_bindings()}
         unbound = [

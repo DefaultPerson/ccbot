@@ -149,7 +149,13 @@ class Config:
 
     @staticmethod
     def _parse_terminal_cmd(raw: str | None) -> list[str]:
-        """Parse CCBOT_TERMINAL_CMD into argv. Empty/unset returns the Ptyxis default."""
+        """Parse CCBOT_TERMINAL_CMD into argv. Empty/unset returns the Ptyxis default.
+
+        The default appends `; set-option -t {session} destroy-unattached on`
+        AFTER `attach` so the temporary view-session cleans itself up when the
+        terminal is closed. Setting destroy-unattached before attach kills the
+        view immediately (tmux applies it to detached sessions on the spot).
+        """
         if raw is None or not raw.strip():
             return [
                 "ptyxis",
@@ -159,6 +165,12 @@ class Config:
                 "attach",
                 "-t",
                 "{session}",
+                ";",
+                "set-option",
+                "-t",
+                "{session}",
+                "destroy-unattached",
+                "on",
             ]
         return shlex.split(raw)
 

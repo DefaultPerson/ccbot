@@ -19,12 +19,17 @@ def _reset_module_state():
     sp._create_disabled_until = 0.0
 
 
-def _make_window(wid: str, name: str = "foo", cwd: str = "/home/u/foo") -> MagicMock:
+def _make_window(
+    wid: str,
+    name: str = "foo",
+    cwd: str = "/home/u/foo",
+    pane_current_command: str = "claude",
+) -> MagicMock:
     w = MagicMock()
     w.window_id = wid
     w.window_name = name
     w.cwd = cwd
-    w.pane_current_command = "claude"
+    w.pane_current_command = pane_current_command
     return w
 
 
@@ -90,6 +95,32 @@ class TestAutoCreateTopics:
 
             bot.create_forum_topic.assert_not_called()
             mock_sm.bind_thread.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_shell_only_window_skipped(self):
+        """Orphan shell prompts (bash/zsh) shouldn't trigger auto-topic creation."""
+        bot = AsyncMock()
+        bot.create_forum_topic = AsyncMock()
+
+        with (
+            patch.object(sp, "tmux_manager") as mock_tmux,
+            patch.object(sp, "session_manager") as mock_sm,
+            patch.object(sp, "config") as mock_config,
+        ):
+            mock_config.auto_create_topics = True
+            mock_config.allowed_users = {1}
+            mock_tmux.list_windows = AsyncMock(
+                return_value=[
+                    _make_window("@7", "def", "/home/u", pane_current_command="bash")
+                ]
+            )
+            mock_sm.iter_thread_bindings.return_value = iter([])
+            mock_sm.is_unbind_blacklisted.return_value = False
+            mock_sm.get_forum_chat_id.return_value = -1001
+
+            await sp.auto_create_topics_for_orphans(bot)
+
+            bot.create_forum_topic.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_blacklisted_window_skipped(self):
