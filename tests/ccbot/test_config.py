@@ -117,3 +117,46 @@ class TestConfigOpenAI:
         monkeypatch.setenv("OPENAI_API_KEY", "sk-secret")
         Config()
         assert os.environ.get("OPENAI_API_KEY") is None
+
+
+@pytest.mark.usefixtures("_base_env")
+class TestConfigBidirectional:
+    def test_terminal_cmd_default_is_ptyxis(self, monkeypatch):
+        monkeypatch.delenv("CCBOT_TERMINAL_CMD", raising=False)
+        cfg = Config()
+        assert cfg.terminal_cmd[0] == "ptyxis"
+        assert "{session}" in cfg.terminal_cmd
+
+    def test_terminal_cmd_custom_shlex_split(self, monkeypatch):
+        monkeypatch.setenv(
+            "CCBOT_TERMINAL_CMD", "alacritty -e tmux attach -t {session}"
+        )
+        cfg = Config()
+        assert cfg.terminal_cmd == [
+            "alacritty",
+            "-e",
+            "tmux",
+            "attach",
+            "-t",
+            "{session}",
+        ]
+
+    def test_terminal_cmd_empty_falls_back_to_default(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_TERMINAL_CMD", "   ")
+        cfg = Config()
+        assert cfg.terminal_cmd[0] == "ptyxis"
+
+    def test_auto_create_topics_default_true(self, monkeypatch):
+        monkeypatch.delenv("CCBOT_AUTO_CREATE_TOPICS", raising=False)
+        cfg = Config()
+        assert cfg.auto_create_topics is True
+
+    def test_auto_create_topics_can_be_disabled(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_AUTO_CREATE_TOPICS", "false")
+        cfg = Config()
+        assert cfg.auto_create_topics is False
+
+    def test_auto_create_topics_interval_custom(self, monkeypatch):
+        monkeypatch.setenv("CCBOT_AUTO_CREATE_INTERVAL", "30.5")
+        cfg = Config()
+        assert cfg.auto_create_topics_interval == 30.5

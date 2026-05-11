@@ -155,3 +155,43 @@ class TestIsWindowId:
         assert mgr._is_window_id("@") is False
         assert mgr._is_window_id("") is False
         assert mgr._is_window_id("@abc") is False
+
+
+class TestForumChatIdPerUser:
+    """user_forum_chat_ids — per-user forum chat for auto-create_topic."""
+
+    def test_set_group_chat_id_populates_user_map(self, mgr: SessionManager) -> None:
+        mgr.set_group_chat_id(100, 1, -1001)
+        assert mgr.get_forum_chat_id(100) == -1001
+
+    def test_get_forum_chat_id_returns_none_for_unknown_user(
+        self, mgr: SessionManager
+    ) -> None:
+        assert mgr.get_forum_chat_id(999) is None
+
+    def test_set_group_chat_id_overwrites_user_map(self, mgr: SessionManager) -> None:
+        mgr.set_group_chat_id(100, 1, -1001)
+        mgr.set_group_chat_id(100, 2, -2002)
+        # Last-write wins for the per-user map.
+        assert mgr.get_forum_chat_id(100) == -2002
+
+
+class TestUnbindBlacklist:
+    def test_add_and_check(self, mgr: SessionManager) -> None:
+        mgr.add_to_unbind_blacklist("@5")
+        assert mgr.is_unbind_blacklisted("@5") is True
+
+    def test_remove(self, mgr: SessionManager) -> None:
+        mgr.add_to_unbind_blacklist("@5")
+        mgr.remove_from_unbind_blacklist("@5")
+        assert mgr.is_unbind_blacklisted("@5") is False
+
+    def test_idempotent_add(self, mgr: SessionManager) -> None:
+        mgr.add_to_unbind_blacklist("@5")
+        mgr.add_to_unbind_blacklist("@5")
+        assert mgr.is_unbind_blacklisted("@5") is True
+
+    def test_purge_window_clears_blacklist(self, mgr: SessionManager) -> None:
+        mgr.add_to_unbind_blacklist("@5")
+        mgr.purge_window("@5")
+        assert mgr.is_unbind_blacklisted("@5") is False

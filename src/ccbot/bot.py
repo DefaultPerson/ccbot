@@ -35,6 +35,8 @@ Key functions: create_bot(), handle_new_message().
 import asyncio
 import io
 import logging
+import os
+import shutil
 import time
 from pathlib import Path
 
@@ -247,6 +249,109 @@ async def screenshot_command(
     )
 
 
+async def show_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Open this topic's tmux window in a desktop terminal emulator.
+
+    Uses `CCBOT_TERMINAL_CMD` (default: Ptyxis). Placeholders {session} and
+    {window_id} are substituted into each argv element. The current tmux active
+    window is set first so a plain `tmux attach` lands on the right window.
+    """
+    user = update.effective_user
+    if not user or not is_user_allowed(user.id):
+        return
+    if not update.message:
+        return
+
+    thread_id = _get_thread_id(update)
+    wid = session_manager.resolve_window_for_thread(user.id, thread_id)
+    if not wid:
+        await safe_reply(update.message, "❌ No session bound to this topic.")
+        return
+
+    w = await tmux_manager.find_window_by_id(wid)
+    if not w:
+        display = session_manager.get_display_name(wid)
+        await safe_reply(update.message, f"❌ Window '{display}' no longer exists.")
+        return
+
+    if not (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        await safe_reply(
+            update.message,
+            "❌ Bot is running headless (no DISPLAY/WAYLAND_DISPLAY). "
+            "Cannot open a desktop terminal.",
+        )
+        return
+
+    argv = [
+        arg.format(session=config.tmux_session_name, window_id=wid)
+        for arg in config.terminal_cmd
+    ]
+    if not argv:
+        await safe_reply(
+            update.message,
+            "❌ CCBOT_TERMINAL_CMD is empty. Set it to a terminal command.",
+        )
+        return
+    if shutil.which(argv[0]) is None:
+        await safe_reply(
+            update.message,
+            f"❌ Terminal binary not found: '{argv[0]}'. "
+            "Set CCBOT_TERMINAL_CMD to a terminal you have installed.",
+        )
+        return
+
+    if not await tmux_manager.select_window(wid):
+        await safe_reply(
+            update.message,
+            f"❌ Failed to set active tmux window to {wid}.",
+        )
+        return
+
+    try:
+        proc = await asyncio.create_subprocess_exec(
+            *argv,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
+            start_new_session=True,
+        )
+    except FileNotFoundError:
+        await safe_reply(
+            update.message,
+            f"❌ Cannot launch '{argv[0]}': binary not found.",
+        )
+        return
+    except OSError as e:
+        await safe_reply(update.message, f"❌ Failed to launch terminal: {e}")
+        return
+
+    async def _watch_early_exit() -> None:
+        try:
+            await asyncio.wait_for(proc.wait(), timeout=1.5)
+        except asyncio.TimeoutError:
+            return  # still running — good
+        if proc.returncode and update.message:
+            stderr = b""
+            if proc.stderr:
+                try:
+                    stderr = await proc.stderr.read()
+                except Exception:  # noqa: BLE001
+                    pass
+            err = stderr.decode("utf-8", errors="replace").strip() or "no stderr"
+            await safe_reply(
+                update.message,
+                f"❌ Terminal exited immediately (code {proc.returncode}): {err}",
+            )
+
+    asyncio.create_task(_watch_early_exit())
+
+    display = session_manager.get_display_name(wid)
+    await safe_reply(
+        update.message,
+        f"📺 Opened '{display}' ({wid}) in {argv[0]}.",
+    )
+
+
 async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Unbind this topic from its Claude session without killing the window."""
     user = update.effective_user
@@ -267,6 +372,7 @@ async def unbind_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> 
 
     display = session_manager.get_display_name(wid)
     session_manager.unbind_thread(user.id, thread_id)
+    session_manager.add_to_unbind_blacklist(wid)
     await clear_topic_state(user.id, thread_id, context.bot, context.user_data)
 
     await safe_reply(
@@ -458,6 +564,14 @@ async def topic_closed_handler(
         return
 
     thread_id = _get_thread_id(update)
+    chat = update.effective_chat
+    logger.info(
+        "topic_closed_handler fired: user=%s thread=%s chat=%s/%s",
+        user.id if user else None,
+        thread_id,
+        getattr(chat, "type", None),
+        getattr(chat, "id", None),
+    )
     if thread_id is None:
         return
 
@@ -864,8 +978,16 @@ async def text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
     # Required: Telegram Bot API needs group chat_id (not user_id) to send
     # messages with message_thread_id. Do NOT remove — see session.py docs.
     chat = update.effective_chat
-    if chat and chat.type in ("group", "supergroup"):
-        session_manager.set_group_chat_id(user.id, thread_id, chat.id)
+    if chat:
+        logger.info(
+            "text_handler chat: type=%s id=%s thread_id=%s is_forum=%s",
+            chat.type,
+            chat.id,
+            thread_id,
+            getattr(chat, "is_forum", None),
+        )
+        if chat.id != user.id:
+            session_manager.set_group_chat_id(user.id, thread_id, chat.id)
 
     text = update.message.text
 
@@ -1847,6 +1969,7 @@ async def post_init(application: Application) -> None:
         BotCommand("start", "Show welcome message"),
         BotCommand("history", "Message history for this topic"),
         BotCommand("screenshot", "Terminal screenshot with control keys"),
+        BotCommand("show", "Open this session in a desktop terminal"),
         BotCommand("esc", "Send Escape to interrupt Claude"),
         BotCommand("kill", "Kill session and delete topic"),
         BotCommand("unbind", "Unbind topic from session (keeps window running)"),
@@ -1923,6 +2046,7 @@ def create_bot() -> Application:
     application.add_handler(CommandHandler("start", start_command))
     application.add_handler(CommandHandler("history", history_command))
     application.add_handler(CommandHandler("screenshot", screenshot_command))
+    application.add_handler(CommandHandler("show", show_command))
     application.add_handler(CommandHandler("esc", esc_command))
     application.add_handler(CommandHandler("kill", kill_command))
     application.add_handler(CommandHandler("unbind", unbind_command))

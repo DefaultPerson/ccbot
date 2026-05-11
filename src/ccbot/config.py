@@ -10,6 +10,7 @@ Key class: Config (singleton instantiated as `config`).
 
 import logging
 import os
+import shlex
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -107,6 +108,26 @@ class Config:
             "OPENAI_BASE_URL", "https://api.openai.com/v1"
         )
 
+        # Desktop terminal command for /show. argv list (no shell=True).
+        # Placeholders {session} and {window_id} are substituted at use time.
+        self.terminal_cmd: list[str] = self._parse_terminal_cmd(
+            os.getenv("CCBOT_TERMINAL_CMD")
+        )
+
+        # Auto-create Telegram topics for tmux windows appearing in ccbot session
+        # that have no thread_binding (e.g. created via `tmux new-window` outside the bot).
+        self.auto_create_topics: bool = (
+            os.getenv("CCBOT_AUTO_CREATE_TOPICS", "true").lower() != "false"
+        )
+        self.auto_create_topics_interval: float = float(
+            os.getenv("CCBOT_AUTO_CREATE_INTERVAL", "10.0")
+        )
+        # Explicit forum supergroup chat_id used by auto-creation when no
+        # per-user forum chat_id has been captured yet. Lets a fresh install
+        # work without first sending a message into a topic.
+        raw_forum = os.getenv("CCBOT_FORUM_CHAT_ID", "").strip()
+        self.forum_chat_id: int | None = int(raw_forum) if raw_forum else None
+
         # Scrub sensitive vars from os.environ so child processes never inherit them.
         # Values are already captured in Config attributes above.
         for var in SENSITIVE_ENV_VARS:
@@ -125,6 +146,21 @@ class Config:
     def is_user_allowed(self, user_id: int) -> bool:
         """Check if a user is in the allowed list."""
         return user_id in self.allowed_users
+
+    @staticmethod
+    def _parse_terminal_cmd(raw: str | None) -> list[str]:
+        """Parse CCBOT_TERMINAL_CMD into argv. Empty/unset returns the Ptyxis default."""
+        if raw is None or not raw.strip():
+            return [
+                "ptyxis",
+                "--new-window",
+                "--",
+                "tmux",
+                "attach",
+                "-t",
+                "{session}",
+            ]
+        return shlex.split(raw)
 
 
 config = Config()

@@ -97,6 +97,10 @@ ALLOWED_USERS=your_telegram_user_id
 | `CCBOT_SHOW_HIDDEN_DIRS` | `false` | Show hidden (dot) directories in directory browser |
 | `OPENAI_API_KEY` | _(none)_ | OpenAI API key for voice message transcription |
 | `OPENAI_BASE_URL` | `https://api.openai.com/v1` | OpenAI API base URL (for proxies or compatible APIs) |
+| `CCBOT_TERMINAL_CMD` | `ptyxis --new-window -- tmux attach -t {session}` | Terminal launched by `/show`. Placeholders `{session}` and `{window_id}` are substituted. Parsed via `shlex.split`. |
+| `CCBOT_AUTO_CREATE_TOPICS` | `true` | Auto-create Telegram topics for tmux windows in the `ccbot` session that have no binding (e.g. created via `tmux new-window` outside the bot). |
+| `CCBOT_AUTO_CREATE_INTERVAL` | `10.0` | Auto-create scan interval, seconds. |
+| `CCBOT_FORUM_CHAT_ID` | _(none)_ | Supergroup chat_id (e.g. `-1001234567890`). Used by auto-create when no per-user forum chat is captured yet — lets `bcc` work on a fresh install without sending a first message into a topic. |
 
 Message formatting is always HTML via `chatgpt-md-converter` (`chatgpt_md_converter` package).
 There is no runtime formatter switch to MarkdownV2.
@@ -145,12 +149,15 @@ uv run ccbot
 
 **Bot commands:**
 
-| Command       | Description                     |
-| ------------- | ------------------------------- |
-| `/start`      | Show welcome message            |
-| `/history`    | Message history for this topic  |
-| `/screenshot` | Capture terminal screenshot     |
-| `/esc`        | Send Escape to interrupt Claude |
+| Command       | Description                                       |
+| ------------- | ------------------------------------------------- |
+| `/start`      | Show welcome message                              |
+| `/history`    | Message history for this topic                    |
+| `/screenshot` | Capture terminal screenshot                       |
+| `/show`       | Open this session in a desktop terminal (Ptyxis)  |
+| `/esc`        | Send Escape to interrupt Claude                   |
+| `/kill`       | Kill the tmux window and delete this topic        |
+| `/unbind`     | Detach topic from window (window keeps running)   |
 
 **Claude Code commands (forwarded via tmux):**
 
@@ -235,6 +242,27 @@ claude
 ```
 
 The window must be in the `ccbot` tmux session (configurable via `TMUX_SESSION_NAME`). The hook will automatically register it in `session_map.json` when Claude starts.
+
+### Option 3: One-shot shell wrappers (`bcc`, `bccd`, ...)
+
+`scripts/bashrc-ccbot.sh` defines small bash helpers that mirror typical `claude` aliases (`cc`/`ccr`/`ccd`/`ccdr`/`ccp`/`ccpr`/`ccpd`/`ccpdr`) with a `b` prefix. Each helper spawns Claude in a new tmux window inside the `ccbot` session **without** attaching the current shell — the bot creates the matching Telegram topic within `CCBOT_AUTO_CREATE_INTERVAL` seconds.
+
+```bash
+cp scripts/bashrc-ccbot.sh ~/.bashrc.d/ccbot.sh && source ~/.bashrc
+bcc                          # claude in the current directory
+bccd ~/Code/myproject        # claude --dangerously-skip-permissions in a dir
+bccpr                        # personal config dir, --resume
+```
+
+The wrappers refuse to run if the `ccbot` tmux session is not up, so start the bot first.
+
+## Bidirectional desktop ↔ Telegram
+
+`ccbot` keeps the tmux state and Telegram in sync both ways:
+
+- **Telegram → Desktop:** `/show` in any bound topic spawns a new terminal window on the desktop attached to that tmux window. Default emulator is [Ptyxis](https://gitlab.gnome.org/chergert/ptyxis); override via `CCBOT_TERMINAL_CMD` (e.g. `alacritty -e tmux attach -t {session}`, `kitty tmux attach -t {session}`, `gnome-terminal -- tmux attach -t {session}`, `foot -- tmux attach -t {session}`). Requires `DISPLAY` or `WAYLAND_DISPLAY` in the bot's environment (run the bot in your graphical user session, not a headless systemd unit).
+- **Desktop → Telegram:** any new tmux window in the `ccbot` session that lacks a binding is auto-discovered and gets a freshly created forum topic. Disable with `CCBOT_AUTO_CREATE_TOPICS=false`. The bot must have `can_manage_topics` rights in the supergroup; missing rights pause auto-creation for one hour after the first failure.
+- `/unbind` blacklists the window so the auto-scan does not immediately re-create a topic for it. `/kill` and tmux window death both clear the blacklist entry.
 
 ## Data Storage
 

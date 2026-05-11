@@ -33,7 +33,10 @@ ccbot hook --install                  # Auto-install Claude Code SessionStart ho
 
 - Config directory: `~/.ccbot/` by default, override with `CCBOT_DIR` env var.
 - `.env` loading priority: local `.env` > config dir `.env`.
-- State files: `state.json` (thread bindings), `session_map.json` (hook-generated), `monitor_state.json` (byte offsets).
+- State files: `state.json` (thread bindings, `user_forum_chat_ids`, `unbind_blacklist`), `session_map.json` (hook-generated), `monitor_state.json` (byte offsets).
+- `CCBOT_TERMINAL_CMD` — argv for `/show` (default Ptyxis). Placeholders `{session}`, `{window_id}`.
+- `CCBOT_AUTO_CREATE_TOPICS` / `CCBOT_AUTO_CREATE_INTERVAL` — toggle and pace the auto-discovery scan that creates Telegram topics for orphan tmux windows in the `ccbot` session.
+- New helpers: `tmux_manager.select_window`, `tmux_manager.set_window_option`, `session_manager.get_forum_chat_id`, `session_manager.add_to_unbind_blacklist`.
 
 ## Hook Configuration
 

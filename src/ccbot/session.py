@@ -110,6 +110,13 @@ class SessionManager:
     # History: originally added in 5afc111, erroneously removed in 26cb81f,
     # restored in PR #23.
     group_chat_ids: dict[str, int] = field(default_factory=dict)
+    # user_id -> forum group chat_id. Populated alongside group_chat_ids; needed
+    # for auto-creating new topics (no thread_id yet, so the keyed map can't help).
+    user_forum_chat_ids: dict[int, int] = field(default_factory=dict)
+    # Windows the user has explicitly unbound. Auto-create scan must skip these
+    # to preserve `/unbind` semantics (otherwise scan would immediately re-bind).
+    # Cleared when the underlying tmux window is purged/killed.
+    unbind_blacklist: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self._load_state()
@@ -126,6 +133,10 @@ class SessionManager:
             },
             "window_display_names": self.window_display_names,
             "group_chat_ids": self.group_chat_ids,
+            "user_forum_chat_ids": {
+                str(uid): cid for uid, cid in self.user_forum_chat_ids.items()
+            },
+            "unbind_blacklist": sorted(self.unbind_blacklist),
         }
         atomic_write_json(config.state_file, state)
         logger.debug("State saved to %s", config.state_file)
@@ -159,6 +170,23 @@ class SessionManager:
                 self.group_chat_ids = {
                     k: int(v) for k, v in state.get("group_chat_ids", {}).items()
                 }
+                raw_forum = state.get("user_forum_chat_ids")
+                if raw_forum is None:
+                    # Legacy state without per-user forum chat map: rebuild from
+                    # group_chat_ids by taking any chat_id seen for each user.
+                    rebuilt: dict[int, int] = {}
+                    for key, chat_id in self.group_chat_ids.items():
+                        uid_str = key.split(":", 1)[0]
+                        try:
+                            rebuilt.setdefault(int(uid_str), int(chat_id))
+                        except ValueError:
+                            continue
+                    self.user_forum_chat_ids = rebuilt
+                else:
+                    self.user_forum_chat_ids = {
+                        int(uid): int(cid) for uid, cid in raw_forum.items()
+                    }
+                self.unbind_blacklist = set(state.get("unbind_blacklist", []))
 
                 # Detect old format: keys that don't look like window IDs
                 needs_migration = False
@@ -432,15 +460,44 @@ class SessionManager:
         """
         tid = thread_id or 0
         key = f"{user_id}:{tid}"
+        changed = False
         if self.group_chat_ids.get(key) != chat_id:
             self.group_chat_ids[key] = chat_id
+            changed = True
+        if self.user_forum_chat_ids.get(user_id) != chat_id:
+            self.user_forum_chat_ids[user_id] = chat_id
+            changed = True
+        if changed:
             self._save_state()
-            logger.debug(
+            logger.info(
                 "Stored group chat_id: user=%d, thread=%s, chat_id=%d",
                 user_id,
                 thread_id,
                 chat_id,
             )
+
+    def get_forum_chat_id(self, user_id: int) -> int | None:
+        """Return the forum group chat_id last seen for this user, if any.
+
+        Used by auto-topic creation: at scan time there is no thread_id yet,
+        so the per-(user,thread) map cannot be consulted.
+        """
+        return self.user_forum_chat_ids.get(user_id)
+
+    # --- Unbind blacklist (auto-create suppression for explicitly unbound windows) ---
+
+    def add_to_unbind_blacklist(self, window_id: str) -> None:
+        if window_id and window_id not in self.unbind_blacklist:
+            self.unbind_blacklist.add(window_id)
+            self._save_state()
+
+    def is_unbind_blacklisted(self, window_id: str) -> bool:
+        return window_id in self.unbind_blacklist
+
+    def remove_from_unbind_blacklist(self, window_id: str) -> None:
+        if window_id in self.unbind_blacklist:
+            self.unbind_blacklist.discard(window_id)
+            self._save_state()
 
     def resolve_chat_id(self, user_id: int, thread_id: int | None = None) -> int:
         """Resolve the correct chat_id for sending messages.
@@ -728,12 +785,16 @@ class SessionManager:
                 changed = True
                 if not offsets:
                     del self.user_window_offsets[uid]
+        if window_id in self.unbind_blacklist:
+            self.unbind_blacklist.discard(window_id)
+            changed = True
         if changed:
             self._save_state()
             logger.info("Purged window state for %s", window_id)
 
     async def cleanup_dead_topic(self, chat_id: int, thread_id: int) -> bool:
-        """Tear down any binding whose chat_id+thread_id matches a dead topic.
+        """Tear down any binding whose chat_id+thread_id matches a dead topic
+        AND kill the bound tmux window so Claude exits with it.
 
         Called from send-failure paths when Telegram returns "Message thread not
         found" / "Topic_id_invalid". The 60s topic-existence probe can miss this
@@ -747,13 +808,23 @@ class SessionManager:
                 continue
             if self.resolve_chat_id(user_id, t_id) != chat_id:
                 continue
+            # Kill the tmux window so Claude exits when the Telegram topic dies.
+            # Symmetric with /kill and topic_closed_handler.
+            try:
+                w = await tmux_manager.find_window_by_id(wid)
+                if w:
+                    await tmux_manager.kill_window(w.window_id)
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "kill_window failed during dead-topic cleanup (%s): %s", wid, e
+                )
             self.unbind_thread(user_id, t_id)
             self.purge_window(wid)
             await self.remove_session_map_entry(wid)
             cleaned = True
             logger.info(
                 "Auto-cleaned dead topic via send error: "
-                "user=%d thread=%d window_id=%s",
+                "user=%d thread=%d window_id=%s (tmux window killed)",
                 user_id,
                 t_id,
                 wid,

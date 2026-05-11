@@ -364,6 +364,60 @@ class TmuxManager:
 
         return await asyncio.to_thread(_sync_kill)
 
+    async def select_window(self, window_id: str) -> bool:
+        """Set the active window of the ccbot session to window_id.
+
+        Used by /show so that a subsequent `tmux attach` lands on the requested
+        window. Works whether or not any client is currently attached.
+        """
+        target = f"{config.tmux_session_name}:{window_id}"
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "tmux",
+                "select-window",
+                "-t",
+                target,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await proc.communicate()
+            if proc.returncode == 0:
+                return True
+            logger.error(
+                "tmux select-window failed for %s: %s",
+                target,
+                stderr.decode("utf-8", errors="replace").strip(),
+            )
+            return False
+        except Exception as e:
+            logger.error("Unexpected error selecting window %s: %s", target, e)
+            return False
+
+    async def set_window_option(self, window_id: str, option: str, value: str) -> bool:
+        """Set a tmux window option (e.g. allow-rename off) on a specific window."""
+
+        def _sync_set() -> bool:
+            session = self.get_session()
+            if not session:
+                return False
+            try:
+                window = session.windows.get(window_id=window_id)
+                if not window:
+                    return False
+                window.set_window_option(option, value)
+                return True
+            except Exception as e:
+                logger.error(
+                    "Failed to set option %s=%s on %s: %s",
+                    option,
+                    value,
+                    window_id,
+                    e,
+                )
+                return False
+
+        return await asyncio.to_thread(_sync_set)
+
     async def create_window(
         self,
         work_dir: str,
@@ -414,14 +468,17 @@ class TmuxManager:
                 # Prevent Claude Code from overriding window name
                 window.set_window_option("allow-rename", "off")
 
-                # Start Claude Code if requested
+                # Start Claude Code if requested.
+                # Append `; exit` so the shell exits when Claude exits, closing
+                # the tmux window. The bot's stale-binding scan then deletes
+                # the bound Telegram topic.
                 if start_claude:
                     pane = window.active_pane
                     if pane:
                         cmd = config.claude_command
                         if resume_session_id:
                             cmd = f"{cmd} --resume {resume_session_id}"
-                        pane.send_keys(cmd, enter=True)
+                        pane.send_keys(f"{cmd}; exit", enter=True)
 
                 logger.info(
                     "Created window '%s' (id=%s) at %s",
