@@ -264,9 +264,11 @@ class TestFormatToolResultText:
                 lambda r: r == "  ⎿  Read 3 lines",
             ),
             (
-                "line1\nline2",
+                # Write line count comes from tool_input_data (the written
+                # content), not the result text — without it, 0 lines
+                "File created successfully at: out.txt",
                 "Write",
-                lambda r: r == "  ⎿  Wrote 2 lines",
+                lambda r: r == "  ⎿  Wrote 0 lines",
             ),
             (
                 "output line",
@@ -311,6 +313,23 @@ class TestFormatToolResultText:
     def test_format_tool_result_text(self, text: str, tool_name: str, check):
         result = TranscriptParser._format_tool_result_text(text, tool_name)
         assert check(result), f"Failed check for {tool_name!r}: {result!r}"
+
+    def test_write_counts_lines_from_input_content(self):
+        """Write derives its line count from the written content (f5ddd7f)."""
+        result = TranscriptParser._format_tool_result_text(
+            "File created successfully at: out.txt",
+            "Write",
+            tool_input_data={"content": "line1\nline2"},
+        )
+        assert result == "  ⎿  Wrote 2 lines"
+
+    def test_write_trailing_newline_not_counted_extra(self):
+        result = TranscriptParser._format_tool_result_text(
+            "ok",
+            "Write",
+            tool_input_data={"content": "line1\nline2\n"},
+        )
+        assert result == "  ⎿  Wrote 2 lines"
 
 
 # ── parse_entries ────────────────────────────────────────────────────────
