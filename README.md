@@ -305,6 +305,10 @@ src/ccbot/
     └── status_polling.py  # Terminal status line polling
 ```
 
+## CI
+
+The Check workflow runs Ruff, Pyright and tests on Python 3.12 and 3.13. Optional PR review requires `CLAUDE_CODE_OAUTH_TOKEN`; without it the review step is skipped.
+
 ## Contributors
 
 Thanks to all the people who contribute! We encourage using Claude Code to collaborate on contributions.
